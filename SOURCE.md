@@ -2,6 +2,107 @@
 
 Students: Nevo Alani, Ori Mor
 
+## 1. Approved source — summary
+
+| # | Name | Address | Format | Key / user name | License / terms | Sampling frequency |
+|---|---|---|---|---|---|---|
+| 1A | Shufersal PriceFull, branch 113 (Deal Rishon LeZion, Golda Meir 1) | `https://prices.shufersal.co.il/FileObject/UpdateCategory?catID=2&storeId=113` | gzipped XML | None | Published by law (Promotion of Competition in the Food Sector Law, 2014) for public access. No license or terms page on the site | Once a day, 05:35 UTC |
+| 1B | Shufersal PromoFull, branch 113 | Same, with `catID=4` | gzipped XML | None | Same as 1A | Once a day, 05:35 UTC |
+| 1C | Rami Levy PriceFull, branch 043 (Rishon LeZion, Cinema complex) | `https://url.publishedprices.co.il` (file `PriceFull7290058140886-001-043-*.gz`) | gzipped XML | Public user name `RamiLevi`, empty password | Published by law, as 1A. The portal links to no terms of use | Once a day, 05:35 UTC |
+| 1D | Rami Levy PromoFull, branch 043 | Same portal (file `PromoFull7290058140886-001-043-*.gz`) | gzipped XML | Same as 1C | Same as 1C | Once a day, 05:35 UTC |
+| 1E | Bank of Israel USD/ILS representative rate | `https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI.STATISTICS/EXR/1.0/RER_USD_ILS?...&format=csv` | CSV | None | Bank of Israel terms of use: the information is the Bank's property, and copying or publishing it requires prior written consent. We store one public daily value for academic, non-commercial use only | Once a day, 05:35 UTC |
+
+## 2. What we collect
+
+Every day we save the full price file and the full promotions file of one large Shufersal branch
+and one large Rami Levy branch in Rishon LeZion, and the Bank of Israel USD/ILS rate. The price files
+list every item with its regular price. The promotion files list every active promotion with its
+dates, its items and the promotion price. All five files of one run are packed, unchanged, into one
+archive: `raw/YYYY-mm-dd/HHMM.tar` (UTC). Details and real samples of each source are in the
+source details (1A–1E) below.
+
+## 3. Schema of `data/dataset.csv`
+
+One CSV file with a header row. **One row = one item, in one chain, on one sample date, in one promotion.**
+An item with no promotion that day gets one row with empty promotion columns. An item in several
+promotions gets one row per promotion. Only items whose barcode appears in **both** branches on that
+date are included.
+
+| Column | Meaning | Content / units |
+|---|---|---|
+| `sample_date` | Date of the sample (name of the `raw/` folder) | `YYYY-mm-dd`, UTC |
+| `chain` | Chain | `shufersal` or `ramilevy` |
+| `store_id` | Branch number in the chain's files | `113` or `043` (text) |
+| `item_code` | Item barcode, the join key between the chains | Digits, kept as text |
+| `regular_price` | Regular shelf price | ILS, 2 decimals |
+| `price_update_time` | Last time the chain changed the regular price | `YYYY-mm-ddTHH:MMZ`, UTC (converted from Israel time) |
+| `promotion_id` | Promotion ID in the chain's file | Text; empty if no promotion |
+| `group_id` | Group inside the promotion (some promotions have two groups of items) | Text; empty if no promotion |
+| `reward_type` | Type of promotion | `2` percent off, `3` fixed price, `10` multi-buy / gift; empty if no promotion |
+| `promo_price` | Price in the promotion | ILS, as published (for `10`, the price of `min_qty` items) |
+| `discount_rate` | Discount stated by the chain | Percent, as published |
+| `min_qty` | Minimum quantity to get the promotion | Number of units |
+| `promo_start` | Start of the promotion | `YYYY-mm-ddTHH:MMZ`, UTC (converted from Israel time) |
+| `promo_end` | End of the promotion | `YYYY-mm-ddTHH:MMZ`, UTC (converted from Israel time) |
+| `club_id` | Who can use the promotion | `0` = all customers; other numbers = a club |
+| `is_coupon` | Whether the promotion needs a coupon | `1` or `0` |
+| `usd_ils` | Bank of Israel representative rate on the latest business day up to `sample_date` | ILS per 1 USD, 3 decimals |
+
+## 4. Why these columns
+
+- `regular_price` and `price_update_time` give the price history needed to check if a promotion is
+  really cheaper than the price in the ~14 days before it, and if the price rose before it started.
+- The promotion columns (`reward_type`, `promo_price`, `discount_rate`, `min_qty`, `promo_start`,
+  `promo_end`, `club_id`, `is_coupon`) are what we need to count promotions and measure their depth.
+- We keep only `reward_type` 2, 3 and 10. Type 0 rows are mostly coupons whose "promotion price" equals
+  the regular price, and types 1 and 12 are rare. At Shufersal, type 10 is also used for gift coupons
+  (for example `DiscountedPrice` 0.00), so `is_coupon` and `promo_price` let the analysis separate them.
+- Multi-buy promotions such as "2 for 25" are `reward_type` 10 with `min_qty` 2 and `promo_price` 25. The price is for the whole bundle, so the price per unit is `promo_price / min_qty`, and we compare that with `regular_price`. We do not rely on `discount_rate` for multi-buy promotions: Shufersal usually leaves it empty, and at Rami Levy it matched our calculation in only 93% of the rows we checked on 2026-11-16.
+- Most multi-buy promotions apply to a group of items ("any 2 of these 11"), and the items in a group can have different regular prices. All the rows of one promotion share `promotion_id`, and `group_id` separates the groups of a promotion, so the group can be rebuilt. Comparing each item alone with the bundle price is therefore an approximation.
+- The chains publish times in Israel time. Following the project rule, all times in the dataset are converted to UTC (Israel is UTC+2 in winter), for example `2026-11-01T00:00` in Israel becomes `2026-10-31T22:00Z`.
+- `usd_ils` is repeated on every row so the exchange rate can be compared with promotions and regular
+  prices, including with a time lag, without a second file.
+- We drop `ItemName`, `ManufactureName`, `UnitOfMeasure`, `UnitOfMeasurePrice`, `AllowDiscount`,
+  `LastSaleDateTime`, `PromotionDescription` and similar fields. Names differ between chains (we join
+  on the barcode), and the other fields do not help answer our questions. Dropping them keeps the file
+  under GitHub's 100 MB file limit. They all stay in `raw/`, so we can add them later.
+- Only shared barcodes are kept, so both chains are compared on the same products. On 2026-11-16 there
+  were 3,513 shared barcodes. The files have no category field, so per-category questions would need
+  an extra mapping.
+
+## 5. Translation table (source field → schema column)
+
+| Schema column | Shufersal (1A / 1B) | Rami Levy (1C / 1D) | Bank of Israel (1E) |
+|---|---|---|---|
+| `sample_date` | `raw/` folder name | `raw/` folder name | — |
+| `chain` | constant `shufersal` | constant `ramilevy` | — |
+| `store_id` | `StoreID` | `StoreID` | — |
+| `item_code` | `ItemCode` | `ItemCode` | — |
+| `regular_price` | `ItemPrice` | `ItemPrice` | — |
+| `price_update_time` | `PriceUpdateTime` (Israel time → UTC) | `PriceUpdateTime` (Israel time → UTC) | — |
+| `promotion_id` | `PromotionID` | `PromotionID` | — |
+| `group_id` | `GroupID` | `GroupID` | — |
+| `reward_type` | `RewardType` | `RewardType` | — |
+| `promo_price` | `DiscountedPrice` | `DiscountedPrice` | — |
+| `discount_rate` | `DiscountRate` | `DiscountRate` | — |
+| `min_qty` | `MinQty` | `MinQty` | — |
+| `promo_start` | `PromotionStartDateTime` (Israel time → UTC) | `PromotionStartDateTime` (Israel time → UTC) | — |
+| `promo_end` | `PromotionEndDateTime` (Israel time → UTC) | `PromotionEndDateTime` (Israel time → UTC) | — |
+| `club_id` | `ClubID` (number before ` - `, e.g. `0 - כלל הלקוחות` → `0`) | `ClubID` | — |
+| `is_coupon` | `AdditionalIsCoupon` | `AdditionalIsCoupon` | — |
+| `usd_ils` | — | — | `OBS_VALUE` of the latest `TIME_PERIOD` up to `sample_date` |
+
+## 6. Expected size after one semester
+
+Based on the files of 2026-11-16 and about 74 sample days (late November 2026 to the end of January 2027):
+
+- **`raw/`:** about 2.0 MB a day (Shufersal 0.51 MB, Rami Levy 1.49 MB, exchange rate under 1 KB),
+  so about **150 MB**.
+- **`data/dataset.csv`:** about 8,500 rows a day (shared barcodes, plus one row per extra promotion),
+  so about **630,000 rows** and roughly **70 MB**.
+- Together about 220 MB, below the 500 MB limit. If it grows too much, the fallback plan below
+  (a basket of 50–100 barcodes) gives about 15,000 rows and under 2 MB.
+
 ## Proposal 1 (chosen): Do Shufersal and Rami Levy run their promotions differently?
 
 Following the feedback, we compare two chains instead of one: **Shufersal** (a mainstream chain) and **Rami Levy** (a discount chain). 
@@ -290,6 +391,11 @@ gzipped, as published.
   2. Claude ran `curl` tests to verify access to the Rami Levy portal and the Bank of Israel API, and
      to measure file sizes, item and promotion counts, and robots.txt.
   3. Claude organized the text of this document and arranged it in a clean Markdown format. We reviewed and approved it.
+- **Update for exercise 3 (2026-11-19):**
+  1. We chose the schema of `dataset.csv`: shared barcodes only, and one row per item, chain, date and promotion.
+     We decided to include the Bank of Israel rate.
+  2. Claude measured row counts and sizes for each schema option on our 2026-11-16 files, checked the Bank of
+     Israel terms of use, and organized the six new sections in Markdown. We reviewed and approved them.
 - **Initial prompt(s):**
   > Organize this information into a clean Markdown format, following the base structure that already
   > exists in SOURCE.md. Run curl commands against the sources and put examples of the data points in
